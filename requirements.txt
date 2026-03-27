@@ -1,7 +1,7 @@
-pyrogram==2.0.106
+pyrofork==2.3.69
 tgcrypto
-motor
-pymongo
+motor==3.7.1
+pymongo==4.15.3
 fastapi
 uvicorn[standard]
 python-dotenv
