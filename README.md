@@ -13,11 +13,21 @@ A Python-based multi-bot broadcast system for Telegram, with a web dashboard and
 
 ## Tech Stack
 
-- Python 3
-- Pyrogram + TgCrypto
+- Python 3.12.2
+- Pyrofork 2.3.69 + TgCrypto
 - FastAPI + Uvicorn
-- MongoDB (Motor + PyMongo)
+- MongoDB (Motor 3.7.1 + PyMongo 4.15.3)
 - python-dotenv
+
+
+## Version Compatibility
+
+- **Python:** `3.12.2`
+- **Telegram client library:** `pyrofork==2.3.69`
+- **MongoDB drivers:** `motor==3.7.1`, `pymongo==4.15.3`
+- **MongoDB server versions supported by this setup:** **4.0 to 8.0**
+
+> If you run MongoDB 4.0+, this project setup is compatible with the above pinned Python and driver versions.
 
 ## Project Structure
 
