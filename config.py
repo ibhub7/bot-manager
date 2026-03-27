@@ -42,9 +42,10 @@ HEARTBEAT_TIMEOUT:  int = 90   # seconds before marking bot offline
 SESSIONS_DIR: str = os.getenv("SESSIONS_DIR", "sessions")
 
 # ─── Web dashboard ─────────────────────────────────────────────────────────────
-WEB_HOST:         str = os.getenv("WEB_HOST",         "0.0.0.0")
-WEB_PORT:         int = int(os.getenv("WEB_PORT",     "8080"))
-DASHBOARD_TOKEN:  str = os.getenv("DASHBOARD_TOKEN",  "changeme123")
+WEB_HOST: str = os.getenv("WEB_HOST", "0.0.0.0")
+# Prefer platform-provided $PORT (e.g., Render), then fall back to WEB_PORT/local default.
+WEB_PORT: int = int(os.getenv("PORT", os.getenv("WEB_PORT", "8080")))
+DASHBOARD_TOKEN: str = os.getenv("DASHBOARD_TOKEN", "changeme123")
 
 # ─── Log channel (Fix #15: auto-notify on broadcast complete) ──────────────────
 # Set to your Telegram channel/group ID. Leave 0 to disable.
