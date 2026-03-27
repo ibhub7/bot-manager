@@ -10,7 +10,9 @@ Fix #11: /savetemplate + /templates — broadcast templates in MongoDB
 import asyncio
 import time
 from datetime import datetime, timezone
+from typing import Dict, Optional
 
+from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
@@ -23,6 +25,8 @@ from utils.importer import import_from_mongo
 
 
 def register_admin_handlers(master: Client):
+    # Per-admin external Mongo sessions (for /connect_mongodb workflow)
+    mongo_sessions: Dict[int, dict] = {}
 
     # ─── Helper: run broadcast as background task (Fix #3) ───────────────────
 
@@ -320,6 +324,198 @@ def register_admin_handlers(master: Client):
                 f"⏭ ꜱᴋɪᴘᴘᴇᴅ  : <code>{skp}</code>"
             )
 
+    # ─── External Mongo tools (connect/list/clear/drop/clone) ────────────────
+
+    def _session(admin_id: int) -> Optional[dict]:
+        return mongo_sessions.get(admin_id)
+
+    @master.on_message(
+        filters.command("connect_mongodb") & filters.user(ADMINS) & filters.private
+    )
+    async def cmd_connect_mongodb(_, msg: Message):
+        args = msg.command[1:]
+        if not args:
+            return await msg.reply(
+                "ᴜꜱᴀɢᴇ: /connect_mongodb <mongo_url> [db_name]"
+            )
+
+        mongo_url = args[0]
+        db_name = args[1] if len(args) > 1 else None
+
+        # Close any previous session for this admin
+        old = _session(msg.from_user.id)
+        if old:
+            try:
+                old["client"].close()
+            except Exception:
+                pass
+
+        sts = await msg.reply("⏳ ᴄᴏɴɴᴇᴄᴛɪɴɢ...")
+        try:
+            client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=10000)
+            await client.server_info()
+            if not db_name:
+                db_name = await client.get_default_database().name if client.get_default_database() else None
+            mongo_sessions[msg.from_user.id] = {
+                "client": client,
+                "url": mongo_url,
+                "db_name": db_name,
+            }
+            await sts.edit(
+                "✅ ᴍᴏɴɢᴏᴅʙ ᴄᴏɴɴᴇᴄᴛᴇᴅ\n"
+                f"🗂 ᴅᴇꜰᴀᴜʟᴛ ᴅʙ: <code>{db_name or '(not set)'}</code>\n"
+                "ɴᴇxᴛ: /mongo_collections [db_name]"
+            )
+        except Exception as e:
+            await sts.edit(f"❌ ᴄᴏɴɴᴇᴄᴛ ꜰᴀɪʟᴇᴅ: <code>{e}</code>")
+
+    @master.on_message(
+        filters.command("mongo_disconnect") & filters.user(ADMINS) & filters.private
+    )
+    async def cmd_mongo_disconnect(_, msg: Message):
+        sess = _session(msg.from_user.id)
+        if not sess:
+            return await msg.reply("❌ ɴᴏ ᴀᴄᴛɪᴠᴇ ᴍᴏɴɢᴏ ꜱᴇꜱꜱɪᴏɴ.")
+        try:
+            sess["client"].close()
+        except Exception:
+            pass
+        mongo_sessions.pop(msg.from_user.id, None)
+        await msg.reply("✅ ᴍᴏɴɢᴏ ꜱᴇꜱꜱɪᴏɴ ᴄʟᴏꜱᴇᴅ.")
+
+    @master.on_message(
+        filters.command("mongo_collections") & filters.user(ADMINS) & filters.private
+    )
+    async def cmd_mongo_collections(_, msg: Message):
+        sess = _session(msg.from_user.id)
+        if not sess:
+            return await msg.reply("❌ ꜰɪʀꜱᴛ ᴜꜱᴇ /connect_mongodb <url> [db_name]")
+
+        db_name = msg.command[1] if len(msg.command) > 1 else sess.get("db_name")
+        if not db_name:
+            return await msg.reply("❌ ᴅʙ ɴᴀᴍᴇ ɴᴏᴛ ꜱᴇᴛ. ᴜꜱᴇ /mongo_collections <db_name>")
+
+        db = sess["client"][db_name]
+        cols = await db.list_collection_names()
+        if not cols:
+            return await msg.reply(f"ℹ️ ɴᴏ ᴄᴏʟʟᴇᴄᴛɪᴏɴꜱ ɪɴ <code>{db_name}</code>.")
+
+        lines = [f"<b>🗂 ᴄᴏʟʟᴇᴄᴛɪᴏɴꜱ ɪɴ {db_name}</b>\n"]
+        for c in cols:
+            count = await db[c].count_documents({})
+            lines.append(f"• <code>{c}</code> — {count} docs")
+        await msg.reply("\n".join(lines))
+
+    @master.on_message(
+        filters.command("mongo_drop_collection") & filters.user(ADMINS) & filters.private
+    )
+    async def cmd_mongo_drop_collection(_, msg: Message):
+        sess = _session(msg.from_user.id)
+        if not sess:
+            return await msg.reply("❌ ꜰɪʀꜱᴛ ᴜꜱᴇ /connect_mongodb <url> [db_name]")
+        args = msg.command[1:]
+        if not args:
+            return await msg.reply(
+                "ᴜꜱᴀɢᴇ: /mongo_drop_collection <collection> [db_name]"
+            )
+        collection = args[0]
+        db_name = args[1] if len(args) > 1 else sess.get("db_name")
+        if not db_name:
+            return await msg.reply("❌ ᴅʙ ɴᴀᴍᴇ ɴᴏᴛ ꜱᴇᴛ.")
+
+        await sess["client"][db_name][collection].drop()
+        await msg.reply(f"🗑 ᴅʀᴏᴘᴘᴇᴅ <code>{db_name}.{collection}</code>")
+
+    @master.on_message(
+        filters.command("mongo_clear_collection") & filters.user(ADMINS) & filters.private
+    )
+    async def cmd_mongo_clear_collection(_, msg: Message):
+        sess = _session(msg.from_user.id)
+        if not sess:
+            return await msg.reply("❌ ꜰɪʀꜱᴛ ᴜꜱᴇ /connect_mongodb <url> [db_name]")
+        args = msg.command[1:]
+        if not args:
+            return await msg.reply(
+                "ᴜꜱᴀɢᴇ: /mongo_clear_collection <collection> [db_name]"
+            )
+        collection = args[0]
+        db_name = args[1] if len(args) > 1 else sess.get("db_name")
+        if not db_name:
+            return await msg.reply("❌ ᴅʙ ɴᴀᴍᴇ ɴᴏᴛ ꜱᴇᴛ.")
+
+        result = await sess["client"][db_name][collection].delete_many({})
+        await msg.reply(
+            f"🧹 ᴄʟᴇᴀʀᴇᴅ <code>{db_name}.{collection}</code>\n"
+            f"🗑 ᴅᴇʟᴇᴛᴇᴅ: <code>{result.deleted_count}</code>"
+        )
+
+    @master.on_message(
+        filters.command("mongo_clone_to") & filters.user(ADMINS) & filters.private
+    )
+    async def cmd_mongo_clone_to(_, msg: Message):
+        """
+        Clone all collections from connected source DB to target MongoDB.
+        Usage:
+          /mongo_clone_to <target_mongo_url> [source_db] [target_db]
+        """
+        sess = _session(msg.from_user.id)
+        if not sess:
+            return await msg.reply("❌ ꜰɪʀꜱᴛ ᴜꜱᴇ /connect_mongodb <url> [db_name]")
+
+        args = msg.command[1:]
+        if not args:
+            return await msg.reply(
+                "ᴜꜱᴀɢᴇ: /mongo_clone_to <target_mongo_url> [source_db] [target_db]"
+            )
+
+        target_url = args[0]
+        source_db_name = args[1] if len(args) > 1 else sess.get("db_name")
+        target_db_name = args[2] if len(args) > 2 else source_db_name
+        if not source_db_name or not target_db_name:
+            return await msg.reply("❌ ꜱᴏᴜʀᴄᴇ/ᴛᴀʀɢᴇᴛ ᴅʙ ɴᴀᴍᴇ ʀᴇQᴜɪʀᴇᴅ.")
+
+        sts = await msg.reply("⏳ ᴄʟᴏɴɪɴɢ ᴍᴏɴɢᴏᴅʙ...")
+        target_client = None
+        try:
+            source_db = sess["client"][source_db_name]
+            target_client = AsyncIOMotorClient(target_url, serverSelectionTimeoutMS=10000)
+            await target_client.server_info()
+            target_db = target_client[target_db_name]
+
+            total_collections = 0
+            total_docs = 0
+            for col_name in await source_db.list_collection_names():
+                total_collections += 1
+                source_col = source_db[col_name]
+                target_col = target_db[col_name]
+
+                await target_col.delete_many({})
+
+                batch = []
+                async for doc in source_col.find({}):
+                    doc.pop("_id", None)  # avoid duplicate key conflicts across DBs
+                    batch.append(doc)
+                    if len(batch) >= 500:
+                        await target_col.insert_many(batch, ordered=False)
+                        total_docs += len(batch)
+                        batch = []
+                if batch:
+                    await target_col.insert_many(batch, ordered=False)
+                    total_docs += len(batch)
+
+            await sts.edit(
+                "✅ ᴍᴏɴɢᴏ ᴄʟᴏɴᴇ ᴄᴏᴍᴘʟᴇᴛᴇᴅ\n"
+                f"ꜰʀᴏᴍ: <code>{source_db_name}</code>\n"
+                f"ᴛᴏ: <code>{target_db_name}</code>\n"
+                f"ᴄᴏʟʟᴇᴄᴛɪᴏɴꜱ: <code>{total_collections}</code>\n"
+                f"ᴅᴏᴄꜱ: <code>{total_docs}</code>"
+            )
+        except Exception as e:
+            await sts.edit(f"❌ ᴄʟᴏɴᴇ ꜰᴀɪʟᴇᴅ: <code>{e}</code>")
+        finally:
+            if target_client:
+                target_client.close()
+
     # ─── /savetemplate / /templates (Fix #11) ────────────────────────────────
 
     @master.on_message(filters.command("savetemplate") & filters.user(ADMINS) & filters.reply)
@@ -433,6 +629,13 @@ def register_admin_handlers(master: Client):
             "/templates — list all templates\n\n"
             "<b>ɪᴍᴘᴏʀᴛ</b> (DM only)\n"
             "/import_mongo &lt;url&gt; &lt;db&gt; &lt;col&gt; &lt;bot_id&gt;\n\n"
+            "<b>ᴇxᴛᴇʀɴᴀʟ ᴍᴏɴɢᴏ</b> (DM only)\n"
+            "/connect_mongodb &lt;url&gt; [db]\n"
+            "/mongo_collections [db]\n"
+            "/mongo_clear_collection &lt;collection&gt; [db]\n"
+            "/mongo_drop_collection &lt;collection&gt; [db]\n"
+            "/mongo_clone_to &lt;target_url&gt; [source_db] [target_db]\n"
+            "/mongo_disconnect\n\n"
             "<b>ʟᴏɢꜱ</b>\n"
             "/history"
         )
